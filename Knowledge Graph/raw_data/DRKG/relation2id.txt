@@ -1,0 +1,107 @@
+105
+bioarx::HumGenHumGen:Gene:Gene	0
+bioarx::VirGenHumGen:Gene:Gene	1
+bioarx::DrugVirGen:Compound:Gene	2
+bioarx::DrugHumGen:Compound:Gene	3
+bioarx::Covid2_acc_host_gene::Disease:Gene	4
+bioarx::Coronavirus_ass_host_gene::Disease:Gene	5
+DGIDB::INHIBITOR::Gene:Compound	6
+DGIDB::ANTAGONIST::Gene:Compound	7
+DGIDB::OTHER::Gene:Compound	8
+DGIDB::AGONIST::Gene:Compound	9
+DGIDB::BINDER::Gene:Compound	10
+DGIDB::MODULATOR::Gene:Compound	11
+DGIDB::BLOCKER::Gene:Compound	12
+DGIDB::CHANNEL BLOCKER::Gene:Compound	13
+DGIDB::ANTIBODY::Gene:Compound	14
+DGIDB::POSITIVE ALLOSTERIC MODULATOR::Gene:Compound	15
+DGIDB::ALLOSTERIC MODULATOR::Gene:Compound	16
+DGIDB::ACTIVATOR::Gene:Compound	17
+DGIDB::PARTIAL AGONIST::Gene:Compound	18
+DRUGBANK::x-atc::Compound:Atc	19
+DRUGBANK::target::Compound:Gene	20
+DRUGBANK::enzyme::Compound:Gene	21
+DRUGBANK::carrier::Compound:Gene	22
+DRUGBANK::treats::Compound:Disease	23
+GNBR::E::Compound:Gene	24
+GNBR::A+::Compound:Gene	25
+GNBR::N::Compound:Gene	26
+GNBR::K::Compound:Gene	27
+GNBR::A-::Compound:Gene	28
+GNBR::E+::Compound:Gene	29
+GNBR::B::Compound:Gene	30
+GNBR::E-::Compound:Gene	31
+GNBR::O::Compound:Gene	32
+GNBR::Z::Compound:Gene	33
+GNBR::T::Compound:Disease	34
+GNBR::C::Compound:Disease	35
+GNBR::Sa::Compound:Disease	36
+GNBR::Pa::Compound:Disease	37
+GNBR::Mp::Compound:Disease	38
+GNBR::Pr::Compound:Disease	39
+GNBR::J::Compound:Disease	40
+GNBR::L::Gene:Disease	41
+GNBR::U::Gene:Disease	42
+GNBR::Y::Gene:Disease	43
+GNBR::J::Gene:Disease	44
+GNBR::Te::Gene:Disease	45
+GNBR::Md::Gene:Disease	46
+GNBR::G::Gene:Disease	47
+GNBR::D::Gene:Disease	48
+GNBR::X::Gene:Disease	49
+GNBR::Ud::Gene:Disease	50
+GNBR::V+::Gene:Gene	51
+GNBR::Q::Gene:Gene	52
+GNBR::Rg::Gene:Gene	53
+GNBR::B::Gene:Gene	54
+GNBR::I::Gene:Gene	55
+GNBR::E+::Gene:Gene	56
+GNBR::H::Gene:Gene	57
+GNBR::W::Gene:Gene	58
+GNBR::E::Gene:Gene	59
+GNBR::in_tax::Gene:Tax	60
+Hetionet::GpBP::Gene:Biological Process	61
+Hetionet::GiG::Gene:Gene	62
+Hetionet::DdG::Disease:Gene	63
+Hetionet::DpS::Disease:Symptom	64
+Hetionet::DlA::Disease:Anatomy	65
+Hetionet::CtD::Compound:Disease	66
+Hetionet::CbG::Compound:Gene	67
+Hetionet::CuG::Compound:Gene	68
+Hetionet::DrD::Disease:Disease	69
+Hetionet::DaG::Disease:Gene	70
+Hetionet::CpD::Compound:Disease	71
+Hetionet::AdG::Anatomy:Gene	72
+Hetionet::AuG::Anatomy:Gene	73
+Hetionet::GcG::Gene:Gene	74
+Hetionet::GpMF::Gene:Molecular Function	75
+Hetionet::PCiC::Pharmacologic Class:Compound	76
+Hetionet::GpCC::Gene:Cellular Component	77
+Hetionet::Gr>G::Gene:Gene	78
+Hetionet::CdG::Compound:Gene	79
+Hetionet::DuG::Disease:Gene	80
+Hetionet::GpPW::Gene:Pathway	81
+Hetionet::CcSE::Compound:Side Effect	82
+Hetionet::AeG::Anatomy:Gene	83
+INTACT::PHYSICAL ASSOCIATION::Compound:Gene	84
+INTACT::DIRECT INTERACTION::Compound:Gene	85
+INTACT::ASSOCIATION::Compound:Gene	86
+INTACT::ASSOCIATION::Gene:Gene	87
+INTACT::PHYSICAL ASSOCIATION::Gene:Gene	88
+INTACT::COLOCALIZATION::Gene:Gene	89
+INTACT::DEPHOSPHORYLATION REACTION::Gene:Gene	90
+INTACT::CLEAVAGE REACTION::Gene:Gene	91
+INTACT::DIRECT INTERACTION::Gene:Gene	92
+INTACT::PHOSPHORYLATION REACTION::Gene:Gene	93
+INTACT::ADP RIBOSYLATION REACTION::Gene:Gene	94
+INTACT::UBIQUITINATION REACTION::Gene:Gene	95
+INTACT::PROTEIN CLEAVAGE::Gene:Gene	96
+STRING::REACTION::Gene:Gene	97
+STRING::CATALYSIS::Gene:Gene	98
+STRING::ACTIVATION::Gene:Gene	99
+STRING::INHIBITION::Gene:Gene	100
+STRING::OTHER::Gene:Gene	101
+STRING::BINDING::Gene:Gene	102
+STRING::PTMOD::Gene:Gene	103
+STRING::EXPRESSION::Gene:Gene	104
+
