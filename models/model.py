@@ -1,186 +1,184 @@
-import numpy as np
+"""CMAF-DDI model components."""
+
+from __future__ import annotations
+
+from typing import Dict
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
-
-EMB_INIT_EPS = 2.0
-gamma = 12.0
+from torch import nn
 
 
-class cmafddiModel(nn.Module):
+class CMAFDDI(nn.Module):
+    """Fuse drug modalities and classify directed drug pairs.
 
-    def __init__(self, args, entity_pre_embed=None, structure_pre_embed=None, protein_pre_embed=None,smiles_pre_embed=None):
+    The default dimensions reproduce the architecture described in the paper:
+    100-D KG, 300-D molecular, and 320-D protein representations; a 100-D
+    triple-feature product; and a 2,460-D Feature Fusion Perception output.
+    """
 
-        super(cmafddiModel, self).__init__()
+    def __init__(
+        self,
+        kg_embeddings: torch.Tensor,
+        molecular_embeddings: torch.Tensor,
+        protein_embeddings: torch.Tensor,
+        output_dim: int,
+        fusion: str = "cmaf",
+        attention_heads: int = 4,
+        ffp_dim: int = 2460,
+        hidden_dim_1: int = 2048,
+        hidden_dim_2: int = 2048,
+    ) -> None:
+        super().__init__()
+        self._validate_embeddings(
+            kg_embeddings, molecular_embeddings, protein_embeddings
+        )
+        self.fusion = fusion.lower()
+        if self.fusion not in {"cmaf", "concat", "sum"}:
+            raise ValueError(f"Unsupported fusion method: {fusion}")
 
-        self.fusion_type = args.feature_fusion
+        self.num_drugs = molecular_embeddings.shape[0]
+        self.kg_dim = kg_embeddings.shape[1]
+        self.molecular_dim = molecular_embeddings.shape[1]
+        self.protein_dim = protein_embeddings.shape[1]
+        self.raw_dim = self.kg_dim + self.molecular_dim + self.protein_dim
 
-        # embedding setting
-        self.structure_dim = args.structure_dim
-        self.entity_dim = args.entity_dim
-        self.protein_dim = args.protein_dim
-        # embedding data
-        self.structure_pre_embed = structure_pre_embed
-        self.entity_pre_embed = entity_pre_embed
-        self.protein_pre_embed = protein_pre_embed
-        self.smiles_pre_embed = smiles_pre_embed
-        self.n_approved_drug = structure_pre_embed.shape[0]
+        # Features are fixed inputs and deliberately omitted from checkpoints.
+        self.register_buffer("kg_embeddings", kg_embeddings.float(), persistent=False)
+        self.register_buffer(
+            "molecular_embeddings", molecular_embeddings.float(), persistent=False
+        )
+        self.register_buffer(
+            "protein_embeddings", protein_embeddings.float(), persistent=False
+        )
 
-        # self.n_entities = n_entities
-        # self.n_relations = n_relations
-
-        self.multi_type = args.multi_type
-
-        # self.conv_dim_list = [args.entity_dim] + eval(args.conv_dim_list)
-        # self.mess_dropout = eval(args.mess_dropout)
-        # self.n_layers = len(eval(args.conv_dim_list))
-
-        # self.ddi_l2loss_lambda = args.DDI_l2loss_lambda
-
-        self.hidden_dim = args.entity_dim
-        self.eps = EMB_INIT_EPS
-        self.emb_init = (gamma + self.eps) / self.hidden_dim
-
-        # fusion type
-        if self.fusion_type == 'concat':
-
-            self.layer1_f = nn.Sequential(
-                nn.Linear(self.structure_dim + self.entity_dim + self.protein_dim, self.entity_dim),
-                nn.BatchNorm1d(self.entity_dim),
-                nn.LeakyReLU(True))
-            self.layer2_f = nn.Sequential(nn.Linear(self.entity_dim, self.entity_dim),
-                                          nn.BatchNorm1d(self.entity_dim),
-                                          nn.LeakyReLU(True))
-            self.layer3_f = nn.Sequential(nn.Linear(self.entity_dim, self.entity_dim),
-                                          nn.BatchNorm1d(self.entity_dim),
-                                          nn.LeakyReLU(True))
-
-        elif self.fusion_type == 'sum':
-
-            self.W_s = nn.Linear(self.structure_dim, self.entity_dim)
-            self.W_e = nn.Linear(self.entity_dim, self.entity_dim)
-            self.W_p = nn.Linear(self.protein_dim, self.entity_dim)
-
-
-        elif self.fusion_type == 'CMAF':
-            self.druglayer_structure = nn.Linear(self.structure_dim, self.entity_dim)
-            self.druglayer_KG = nn.Linear(self.entity_dim, self.entity_dim)
-            self.druglayer_protein = nn.Linear(self.protein_dim, self.entity_dim)
-            self.attention = nn.MultiheadAttention(embed_dim=720, num_heads=3)
-            self.attention_layer = nn.Sequential(
-                nn.Linear(820, 2460),
-                nn.ReLU(),
-                nn.Linear(2460, 2460)
+        if self.fusion == "cmaf":
+            if self.raw_dim % attention_heads != 0:
+                raise ValueError(
+                    f"Concatenated dimension {self.raw_dim} must be divisible by "
+                    f"attention_heads={attention_heads}."
+                )
+            self.molecular_projection = nn.Linear(self.molecular_dim, self.kg_dim)
+            self.kg_projection = nn.Linear(self.kg_dim, self.kg_dim)
+            self.protein_projection = nn.Linear(self.protein_dim, self.kg_dim)
+            self.attention = nn.MultiheadAttention(
+                embed_dim=self.raw_dim, num_heads=attention_heads
             )
-            encoder_layers = TransformerEncoderLayer(d_model=100, nhead=4)
-            self.transformer_encoder = TransformerEncoder(encoder_layers, num_layers=2)
-            self.multi_drug = nn.Sequential(nn.Linear(self.entity_dim, self.entity_dim))
-            self.activate = nn.ReLU()
-
-
-        if self.fusion_type in ['concat']:
-            self.all_embedding_dim = self.entity_dim*2
-        elif self.fusion_type in ['CMAF']:
-            self.all_embedding_dim = (self.structure_dim + self.entity_dim*2+ self.protein_dim) *6
-        elif self.fusion_type in ['sum']:
-            self.all_embedding_dim = self.entity_dim*2
-
-
-        self.layer1 = nn.Sequential(nn.Linear(self.all_embedding_dim, args.n_hidden_1), nn.BatchNorm1d(args.n_hidden_1),
-                                    nn.ReLU(True))
-        self.layer2 = nn.Sequential(nn.Linear(args.n_hidden_1, args.n_hidden_2), nn.BatchNorm1d(args.n_hidden_2),
-                                    nn.ReLU(True))
-        self.layer3 = nn.Sequential(nn.Linear(args.n_hidden_2, args.out_dim))
-
-    def generate_fusion_feature(self, train_data, batch_data):
-        # we focus on approved drug
-        global embedding_data
-        global embedding_data_reverse
-
-        self.entity_embed_pre = self.entity_pre_embed[:1706, :]
-
-
-        if self.fusion_type == 'concat':
-
-            x = torch.cat([self.structure_pre_embed, self.entity_embed_pre, self.protein_pre_embed], dim=1)
-            x = self.layer1_f(x)
-            x = self.layer2_f(x)
-            x = self.layer3_f(x)
-
-            return x
-
-        elif self.fusion_type == 'sum':
-            structure = self.W_s(self.structure_pre_embed)
-            entity = self.W_e(self.entity_embed_pre)
-            protein = self.W_p(self.protein_pre_embed)
-            all = structure + entity + protein
-
-            return all
-
-
-        elif self.fusion_type == 'CMAF':
-            structure = self.druglayer_structure(self.structure_pre_embed)
-
-            entity = self.druglayer_KG(self.entity_embed_pre)
-
-            protein = self.druglayer_protein(self.protein_pre_embed)
-
-            out3 = self.activate(self.multi_drug(structure * entity * protein))
-
-            concatenated = torch.cat([self.structure_pre_embed, self.entity_embed_pre, self.protein_pre_embed], dim=1)
-            attn_output, _ = self.attention(concatenated.unsqueeze(0), concatenated.unsqueeze(0),
-                                            concatenated.unsqueeze(0))
-            result = torch.cat((attn_output.squeeze(0), out3,), dim=1)
-            fused_feature = self.attention_layer(result)
-
-
-            return fused_feature
-
-        elif self.fusion_type == 'sum':
-
-            #structure = self.W_s(self.structure_pre_embed)
-            protein=self.W_s(self.protein_pre_embed)
-            entity = self.W_e(self.entity_embed_pre)
-            add_structure_entity = protein + entity
-
-            return add_structure_entity
-
-    def train_DDI_data(self, train_data, batch_data):
-
-        # all_embed = self.generate_fusion_feature(batch_data)
-
-        drug1_embed = self.all_embed[train_data[:, 0]]
-        drug2_embed = self.all_embed[train_data[:, 1]]
-        drug_data = torch.cat((drug1_embed, drug2_embed), 1)
-
-        x = self.layer1(drug_data)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        return x
-
-    def test_DDI_data(self, test_data, batch_data):
-
-        # all_embed = self.generate_fusion_feature(batch_data)
-        drug1_embed = self.all_embed[test_data[:, 0]]
-        drug2_embed = self.all_embed[test_data[:, 1]]
-        drug_data = torch.cat((drug1_embed, drug2_embed), 1)
-
-        x = self.layer1(drug_data)
-        x = self.layer2(x)
-        x = self.layer3(x)
-
-        if self.multi_type != 'False':
-            pred = F.softmax(x, dim=1)
+            self.triple_product_mlp = nn.Sequential(
+                nn.Linear(self.kg_dim, self.kg_dim), nn.ReLU()
+            )
+            self.ffp = nn.Sequential(
+                nn.Linear(self.raw_dim + self.kg_dim, ffp_dim),
+                nn.ReLU(),
+                nn.Linear(ffp_dim, ffp_dim),
+            )
+            drug_embedding_dim = ffp_dim
+        elif self.fusion == "concat":
+            self.concat_fusion = nn.Sequential(
+                nn.Linear(self.raw_dim, self.kg_dim),
+                nn.BatchNorm1d(self.kg_dim),
+                nn.LeakyReLU(inplace=True),
+                nn.Linear(self.kg_dim, self.kg_dim),
+                nn.BatchNorm1d(self.kg_dim),
+                nn.LeakyReLU(inplace=True),
+                nn.Linear(self.kg_dim, self.kg_dim),
+                nn.BatchNorm1d(self.kg_dim),
+                nn.LeakyReLU(inplace=True),
+            )
+            drug_embedding_dim = self.kg_dim
         else:
-            pred = torch.sigmoid(x)
+            self.molecular_projection = nn.Linear(self.molecular_dim, self.kg_dim)
+            self.kg_projection = nn.Linear(self.kg_dim, self.kg_dim)
+            self.protein_projection = nn.Linear(self.protein_dim, self.kg_dim)
+            drug_embedding_dim = self.kg_dim
 
-        return pred, self.all_embed
+        self.classifier = nn.Sequential(
+            nn.Linear(2 * drug_embedding_dim, hidden_dim_1),
+            nn.BatchNorm1d(hidden_dim_1),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim_1, hidden_dim_2),
+            nn.BatchNorm1d(hidden_dim_2),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim_2, output_dim),
+        )
+        self.config: Dict[str, object] = {
+            "output_dim": output_dim,
+            "fusion": self.fusion,
+            "attention_heads": attention_heads,
+            "ffp_dim": ffp_dim,
+            "hidden_dim_1": hidden_dim_1,
+            "hidden_dim_2": hidden_dim_2,
+            "kg_dim": self.kg_dim,
+            "molecular_dim": self.molecular_dim,
+            "protein_dim": self.protein_dim,
+            "num_drugs": self.num_drugs,
+        }
 
-    def forward(self, mode, *input):
-        self.all_embed = self.generate_fusion_feature(*input)
-        if mode == 'calc_ddi_loss':
-            return self.train_DDI_data(*input)
-        if mode == 'predict':
-            return self.test_DDI_data(*input)
+    @staticmethod
+    def _validate_embeddings(
+        kg_embeddings: torch.Tensor,
+        molecular_embeddings: torch.Tensor,
+        protein_embeddings: torch.Tensor,
+    ) -> None:
+        matrices = {
+            "knowledge graph": kg_embeddings,
+            "molecular graph": molecular_embeddings,
+            "protein sequence": protein_embeddings,
+        }
+        for name, matrix in matrices.items():
+            if matrix.ndim != 2:
+                raise ValueError(f"{name} embeddings must be a 2-D matrix.")
+        rows = {name: matrix.shape[0] for name, matrix in matrices.items()}
+        if len(set(rows.values())) != 1:
+            raise ValueError(f"Embedding row counts are not aligned: {rows}")
 
+    def encode_drugs(self) -> torch.Tensor:
+        raw = torch.cat(
+            [self.kg_embeddings, self.molecular_embeddings, self.protein_embeddings],
+            dim=1,
+        )
+        if self.fusion == "concat":
+            return self.concat_fusion(raw)
+        if self.fusion == "sum":
+            return (
+                self.kg_projection(self.kg_embeddings)
+                + self.molecular_projection(self.molecular_embeddings)
+                + self.protein_projection(self.protein_embeddings)
+            )
+
+        projected_product = (
+            self.kg_projection(self.kg_embeddings)
+            * self.molecular_projection(self.molecular_embeddings)
+            * self.protein_projection(self.protein_embeddings)
+        )
+        triple_feature = self.triple_product_mlp(projected_product)
+
+        # This layout preserves the released implementation: drugs form the
+        # attention batch and the concatenated feature vector forms one token.
+        attention_output, _ = self.attention(
+            raw.unsqueeze(0), raw.unsqueeze(0), raw.unsqueeze(0), need_weights=False
+        )
+        fused = torch.cat([attention_output.squeeze(0), triple_feature], dim=1)
+        return self.ffp(fused)
+
+    def forward(self, drug_pairs: torch.Tensor) -> torch.Tensor:
+        if drug_pairs.ndim != 2 or drug_pairs.shape[1] != 2:
+            raise ValueError("drug_pairs must have shape [batch_size, 2].")
+        if drug_pairs.dtype != torch.long:
+            drug_pairs = drug_pairs.long()
+        if drug_pairs.numel() and (
+            drug_pairs.min().item() < 0
+            or drug_pairs.max().item() >= self.num_drugs
+        ):
+            raise IndexError(
+                f"Drug indices must be between 0 and {self.num_drugs - 1}."
+            )
+
+        drug_embeddings = self.encode_drugs()
+        pair_embeddings = torch.cat(
+            [
+                drug_embeddings[drug_pairs[:, 0]],
+                drug_embeddings[drug_pairs[:, 1]],
+            ],
+            dim=1,
+        )
+        return self.classifier(pair_embeddings)

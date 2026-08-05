@@ -1,0 +1,23 @@
+{
+  "profile": "validated_release_candidate_2026-08-05",
+  "notes": "Validated for shape, finite values, zero-based indices, labels, folds, and cross-modality row counts. A full 200-epoch rerun is separate.",
+  "files": {
+    "drugbank_ddi.tsv": {
+      "shape": [191427, 3],
+      "sha256": "e96bc31fe313b4c00fb8c61a361d4b4014c5a1e5e7b84a2e1f830a412233c74e"
+    },
+    "Drugbank_entity.npy": {
+      "shape": [97243, 100],
+      "used_rows": 1706,
+      "sha256": "b0983c3175601c0276b921a787e4936bc66662baf6d7fb24a4fdb372bbee42ad"
+    },
+    "drugbank_mol_embeddings.npy": {
+      "shape": [1706, 300],
+      "sha256": "53b9bf673a255afdf956b1207c3504817b1d52854824e6fbff24d5f1d7faa817"
+    },
+    "protein_embeddings.npy": {
+      "shape": [1706, 320],
+      "sha256": "8028230b3c532fadeabb9809d6a76951ffc1bbea31b6ac1b994bb0be5cddd41a"
+    }
+  }
+}

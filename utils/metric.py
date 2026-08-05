@@ -1,50 +1,38 @@
+"""Evaluation metrics used by CMAF-DDI."""
 
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,average_precision_score
+from __future__ import annotations
 
+from typing import Dict
 
-def accuracy(y_true, y_pred):
-    
-    return accuracy_score(y_true, y_pred)
-
-
-def precision(y_true, y_pred,multi_type=True):
-    
-    # binary: whether the task is binary-class or not
-    
-    if not multi_type:
-        return precision_score(y_true, y_pred)
-    else:
-        return precision_score(y_true, y_pred, average='macro')
+import numpy as np
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 
 
-def recall(y_true, y_pred,multi_type=True):
-    
-    # binary: whether the task is binary-class or not
-    
-    if not multi_type:
-        return recall_score(y_true, y_pred)
-    else:
-        return recall_score(y_true, y_pred, average='macro')
-
-
-def f1(y_true, y_pred,multi_type=True):
-    
-    # binary: whether the task is binary-class or not
-    
-    if not multi_type:
-        return f1_score(y_true, y_pred)
-    else:
-        return f1_score(y_true, y_pred, average='macro')
-
-
-def auc(y_true,y_pred_score):
-    
-    # for multi-class / multi-label task 
-
-    return roc_auc_score(y_true, y_pred_score, average='macro')
-
-def aupr(y_true,y_pred_score):
-
-    # for multi-class / multi-label task 
-
-    return average_precision_score(y_true,y_pred_score, average="macro")
+def classification_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_score: np.ndarray,
+    task: str,
+) -> Dict[str, float]:
+    average = "macro" if task == "multiclass" else "binary"
+    metrics = {
+        "macro_precision": float(
+            precision_score(y_true, y_pred, average=average, zero_division=0)
+        ),
+        "macro_recall": float(
+            recall_score(y_true, y_pred, average=average, zero_division=0)
+        ),
+        "macro_f1": float(
+            f1_score(y_true, y_pred, average=average, zero_division=0)
+        ),
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+    }
+    if task == "binary":
+        metrics["roc_auc"] = float(roc_auc_score(y_true, y_score))
+    return metrics

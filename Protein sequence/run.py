@@ -1,139 +1,120 @@
-import os
-import torch
-from transformers import AutoTokenizer, AutoModel
+"""Generate drug-aligned ESM2 protein-sequence embeddings."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from contextlib import nullcontext
+from pathlib import Path
+from typing import List
+
 import numpy as np
 import pandas as pd
+import torch
+from transformers import AutoModel, AutoTokenizer
 
-# Set environment variable to disable HuggingFace Hub's symlink warning
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
-# Set device (GPU/CPU)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", type=Path, required=True, help="CSV/TSV mapping file.")
+    parser.add_argument("--output", type=Path, required=True, help="Output .npy file.")
+    parser.add_argument("--delimiter", default=",")
+    parser.add_argument("--drug-column", default="DrugBank_ID")
+    parser.add_argument("--protein-column", default="UniProt_ID")
+    parser.add_argument("--sequence-column", default="FASTA_Sequence")
+    parser.add_argument("--model", default="facebook/esm2_t6_8M_UR50D")
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--max-length", type=int, default=None)
+    parser.add_argument("--device", default="auto")
+    return parser.parse_args()
 
-# Specify local models path
-model_local_path = r"D:\Protein\facebook_esm2_t6_8M_UR50D\models--facebook--esm2_t6_8M_UR50D\snapshots\c731040fcd8d73dceaa04b0a8e6329b345b0f5df"
 
-# Load local ESM models and tokenizer
-tokenizer = AutoTokenizer.from_pretrained(model_local_path)
-model = AutoModel.from_pretrained(model_local_path, output_hidden_states=True)
-model.to(device)
-model.eval()
+def select_device(name: str) -> torch.device:
+    if name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(name)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available.")
+    return device
 
-# Read data file
-data_file = r"D:\Protein\test.csv"
-df = pd.read_csv(data_file)
 
-# Extract necessary information
-drugbank_ids = df["DrugBank_ID"].tolist()
-uniprot_ids = df["UniProt_ID"].tolist()
-fasta_sequences = df["FASTA_Sequence"].tolist()
+def valid_sequence(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
-print(f"There are {len(df)} protein sequences to process.")
 
-# Initialize embedding list, pre-filled with None
-sequence_embeddings = [None] * len(df)
+def main() -> int:
+    args = parse_args()
+    frame = pd.read_csv(args.input, sep=args.delimiter)
+    required = {args.drug_column, args.protein_column, args.sequence_column}
+    missing_columns = required - set(frame.columns)
+    if missing_columns:
+        raise ValueError(f"Missing columns: {sorted(missing_columns)}")
 
-# Determine the dimension of the embedding vector
-# Use a valid sample to get the embedding dimension
-for seq in fasta_sequences:
-    if pd.notna(seq):
-        encoded_input = tokenizer(seq, return_tensors='pt', padding=True)
-        with torch.no_grad():
-            outputs = model(
-                encoded_input['input_ids'].to(device),
-                attention_mask=encoded_input['attention_mask'].to(device),
-            )
-        hidden_states = outputs.hidden_states
-        last_hidden_states = hidden_states[-1]
-        embedding_size = last_hidden_states.size(-1)
-        break
-else:
-    raise ValueError("All sequences are empty, unable to determine the embedding vector dimension.")
+    device = select_device(args.device)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    model = AutoModel.from_pretrained(args.model).to(device)
+    model.eval()
+    embedding_dim = int(model.config.hidden_size)
+    model_limit = int(getattr(model.config, "max_position_embeddings", 1026))
+    max_length = args.max_length or model_limit
 
-# Create a zero vector
-zero_vector = np.zeros(embedding_size, dtype=np.float32)
+    embeddings = np.zeros((len(frame), embedding_dim), dtype=np.float32)
+    valid_rows: List[int] = [
+        index
+        for index, row in frame.iterrows()
+        if pd.notna(row[args.drug_column])
+        and pd.notna(row[args.protein_column])
+        and valid_sequence(row[args.sequence_column])
+    ]
+    special_ids = set(tokenizer.all_special_ids)
 
-# Set batch size
-batch_size = 4  # Adjust according to GPU memory
+    for start in range(0, len(valid_rows), args.batch_size):
+        row_ids = valid_rows[start : start + args.batch_size]
+        sequences = [str(frame.at[index, args.sequence_column]).strip() for index in row_ids]
+        encoded = tokenizer(
+            sequences,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        )
+        encoded = {key: value.to(device) for key, value in encoded.items()}
+        amp_context = (
+            torch.cuda.amp.autocast() if device.type == "cuda" else nullcontext()
+        )
+        with torch.inference_mode(), amp_context:
+            hidden = model(**encoded).last_hidden_state
 
-# Record the number of skipped samples (optional)
-skipped_count = 0
+        valid_mask = encoded["attention_mask"].bool()
+        for token_id in special_ids:
+            valid_mask &= encoded["input_ids"] != token_id
+        denominator = valid_mask.sum(dim=1, keepdim=True).clamp_min(1)
+        pooled = (hidden * valid_mask.unsqueeze(-1)).sum(dim=1) / denominator
+        embeddings[row_ids] = pooled.float().cpu().numpy()
+        print(f"Processed {min(start + args.batch_size, len(valid_rows))}/{len(valid_rows)}")
 
-for i in range(0, len(fasta_sequences), batch_size):
-    batch_indices = list(range(i, min(i + batch_size, len(fasta_sequences))))
-    batch_drugbank_ids = [drugbank_ids[idx] for idx in batch_indices]
-    batch_uniprot_ids = [uniprot_ids[idx] for idx in batch_indices]
-    batch_sequences = [fasta_sequences[idx] for idx in batch_indices]
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.save(args.output, embeddings)
+    metadata = {
+        "input": str(args.input),
+        "output": str(args.output),
+        "model": args.model,
+        "pooling": "masked mean over non-special residue tokens",
+        "rows": len(frame),
+        "valid_rows": len(valid_rows),
+        "zero_rows": len(frame) - len(valid_rows),
+        "embedding_dim": embedding_dim,
+        "max_length": max_length,
+        "drug_column": args.drug_column,
+        "protein_column": args.protein_column,
+        "sequence_column": args.sequence_column,
+    }
+    args.output.with_suffix(".json").write_text(
+        json.dumps(metadata, indent=2), encoding="utf-8"
+    )
+    print(json.dumps(metadata, indent=2))
+    return 0
 
-    # Identify valid samples (DrugBank_ID, UniProt_ID, and FASTA_Sequence are all non-NULL)
-    valid_indices = [j for j, (drug, uni, seq) in enumerate(zip(batch_drugbank_ids, batch_uniprot_ids, batch_sequences))
-                     if pd.notna(drug) and pd.notna(uni) and pd.notna(seq)]
 
-    if not valid_indices:
-        # If the entire batch has no valid sequences, fill all corresponding positions with zero vectors
-        for j in batch_indices:
-            sequence_embeddings[j] = zero_vector
-        skipped_count += len(batch_sequences)
-        continue
-
-    # Extract sequences and original indices of valid samples
-    valid_batch_sequences = [batch_sequences[j] for j in valid_indices]
-    valid_batch_indices = [batch_indices[j] for j in valid_indices]
-
-    # Encode valid sequences
-    encoded_inputs = tokenizer(valid_batch_sequences, return_tensors='pt', padding=True)
-    batch_tokens = encoded_inputs['input_ids'].to(device)
-    batch_attention_mask = encoded_inputs['attention_mask'].to(device)
-    batch_lens = batch_attention_mask.sum(dim=1)
-
-    with torch.no_grad():
-        with torch.cuda.amp.autocast():
-            outputs = model(
-                batch_tokens,
-                attention_mask=batch_attention_mask,
-            )
-            hidden_states = outputs.hidden_states
-            last_hidden_states = hidden_states[-1]
-
-    # Generate embedding features for each sequence (via mean pooling)
-    for j, tokens_len in enumerate(batch_lens):
-        valid_token_reps = last_hidden_states[j, 1: tokens_len - 1]  # Exclude start and end special tokens
-        sequence_rep = valid_token_reps.mean(dim=0)  # (hidden_size,)
-        sequence_embeddings[valid_batch_indices[j]] = sequence_rep.cpu().numpy()
-
-    # For invalid samples, fill with zero vectors
-    invalid_in_batch = set(batch_indices) - set(valid_batch_indices)
-    for j in invalid_in_batch:
-        sequence_embeddings[j] = zero_vector
-
-    # Clear cache
-    torch.cuda.empty_cache()
-
-# Fill all unassigned embeddings with zero vectors (just in case)
-for idx in range(len(sequence_embeddings)):
-    if sequence_embeddings[idx] is None:
-        sequence_embeddings[idx] = zero_vector
-
-# Create a DataFrame of embedding features
-embedding_df = pd.DataFrame({
-    "DrugBank_ID": drugbank_ids,
-    "UniProt_ID": uniprot_ids,
-    "Embedding": sequence_embeddings
-})
-
-# Save embedding features to file
-embedding_dir = r"D:\Protein\embeddings3"
-os.makedirs(embedding_dir, exist_ok=True)
-embedding_file = os.path.join(embedding_dir, "protein_embeddings.npy")
-np.save(embedding_file, embedding_df["Embedding"].tolist())
-print(f"All protein embeddings have been saved to {embedding_file}")
-
-# Optional: Save as CSV file (embeddings stored as strings)
-csv_embedding_file = os.path.join(embedding_dir, "protein_embeddings.csv")
-embedding_df.to_csv(csv_embedding_file, index=False)
-print(f"All protein embeddings have been saved to {csv_embedding_file}")
-
-# Optional: Print the shape of the embedding features
-for idx, embedding in enumerate(embedding_df["Embedding"]):
-    print(f"Embedding shape for {embedding_df['DrugBank_ID'][idx]} ({embedding_df['UniProt_ID'][idx]}): {embedding.shape}")
+if __name__ == "__main__":
+    raise SystemExit(main())

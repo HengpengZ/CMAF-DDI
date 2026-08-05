@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use CMAF-DDI, please cite the accepted JBHI article."
+title: "CMAF-DDI"
+type: software
+authors:
+  - family-names: Zhao
+    given-names: Hengpeng
+repository-code: "https://github.com/HengpengZ/CMAF-DDI"
+license: MIT
+version: 1.0.0
+date-released: 2026-08-05
+preferred-citation:
+  type: article
+  title: "CMAF-DDI: A Knowledge-Enhanced Cross-Modal Fusion Method Leveraging Protein Representation for Multi-Class Drug-Drug Interactions"
+  authors:
+    - family-names: Zhao
+      given-names: Hengpeng
+    - family-names: Lin
+      given-names: Xiaoli
+    - family-names: Pang
+      given-names: Jun
+    - family-names: Li
+      given-names: Bo
+    - family-names: Zhang
+      given-names: Xiaolong
+  journal: "IEEE Journal of Biomedical and Health Informatics"
+  year: 2026

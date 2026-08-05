@@ -1,113 +1,154 @@
-import os
-import pandas
+"""Data loading and alignment checks for CMAF-DDI."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Tuple
+
 import numpy as np
-from sklearn.model_selection import StratifiedKFold,KFold
+import pandas as pd
+from sklearn.model_selection import StratifiedKFold
 
-class DataLoaderCMAF(object):
 
-    def __init__(self, args, logging):
-        self.args = args
-        self.data_name = args.data_name
+Fold = Tuple[np.ndarray, np.ndarray]
 
-        self.multi_type = args.multi_type
 
-        self.entity_dim = args.entity_dim
+@dataclass
+class CMAFData:
+    pairs: np.ndarray
+    labels: np.ndarray
+    kg_embeddings: np.ndarray
+    molecular_embeddings: np.ndarray
+    protein_embeddings: np.ndarray
+    folds: List[Fold]
+    num_classes: int
 
-        self.data_dir = os.path.join(args.data_dir, self.data_name)
-        
-        if self.multi_type == 'True':
-            train_file = r'data\DRKG\drugbank_ddi.tsv'
+    @classmethod
+    def from_args(cls, args: object) -> "CMAFData":
+        pairs, labels = cls._load_ddi(Path(args.ddi_file))
+        num_drugs = int(pairs.max()) + 1
+        kg = cls._load_embeddings(
+            Path(args.entity_embedding_file), "knowledge graph", args.entity_dim
+        )
+        molecular = cls._load_embeddings(
+            Path(args.graph_embedding_file), "molecular graph", args.structure_dim
+        )
+        protein = cls._load_embeddings(
+            Path(args.protein_embedding_file), "protein sequence", args.protein_dim
+        )
+
+        if kg.shape[0] < num_drugs:
+            raise ValueError(
+                f"Knowledge-graph embeddings contain {kg.shape[0]} rows, but DDI "
+                f"indices require at least {num_drugs}."
+            )
+        kg = np.ascontiguousarray(kg[:num_drugs], dtype=np.float32)
+        cls._require_exact_rows(molecular, num_drugs, "Molecular-graph")
+        cls._require_exact_rows(protein, num_drugs, "Protein-sequence")
+
+        unique_labels = np.unique(labels)
+        if args.task == "multiclass":
+            expected = np.arange(unique_labels.size)
+            if not np.array_equal(unique_labels, expected):
+                raise ValueError(
+                    "Multiclass labels must be consecutive integers starting at 0; "
+                    f"found {unique_labels.tolist()}."
+                )
+            num_classes = int(unique_labels.size)
+            if num_classes < 2:
+                raise ValueError("Multiclass training requires at least two labels.")
         else:
-            train_file = os.path.join(self.data_dir, 'drugbank_ddibinary.txt')
+            if not set(unique_labels.tolist()).issubset({0, 1}):
+                raise ValueError(
+                    f"Binary labels must be 0 or 1; found {unique_labels.tolist()}."
+                )
+            num_classes = 2
 
-        self.DDI_train_data_X, self.DDI_train_data_Y, self.DDI_test_data_X, self.DDI_test_data_Y = self.load_DDI_data(train_file)
+        _, class_counts = np.unique(labels, return_counts=True)
+        if class_counts.min() < args.folds:
+            raise ValueError(
+                f"The smallest class has {class_counts.min()} samples, fewer than "
+                f"folds={args.folds}."
+            )
+        splitter = StratifiedKFold(
+            n_splits=args.folds, shuffle=True, random_state=args.split_seed
+        )
+        folds = [(train, test) for train, test in splitter.split(pairs, labels)]
+        return cls(
+            pairs=np.ascontiguousarray(pairs, dtype=np.int64),
+            labels=np.ascontiguousarray(labels, dtype=np.int64),
+            kg_embeddings=kg,
+            molecular_embeddings=np.ascontiguousarray(molecular, dtype=np.float32),
+            protein_embeddings=np.ascontiguousarray(protein, dtype=np.float32),
+            folds=folds,
+            num_classes=num_classes,
+        )
 
-        self.statistic_ddi_data()
+    @staticmethod
+    def _load_ddi(path: Path) -> Tuple[np.ndarray, np.ndarray]:
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"DDI file not found: {path}. See data/README.md for the layout."
+            )
+        frame = pd.read_csv(path, sep="\t", header=None)
+        if frame.shape[1] != 3:
+            raise ValueError(
+                f"{path} must contain exactly three tab-separated columns; "
+                f"found {frame.shape[1]}."
+            )
+        if frame.isna().any().any():
+            raise ValueError(f"{path} contains missing values.")
+        try:
+            values = frame.to_numpy(dtype=np.int64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{path} must contain integer values only.") from exc
+        pairs = values[:, :2]
+        labels = values[:, 2]
+        if len(values) == 0:
+            raise ValueError(f"{path} is empty.")
+        if pairs.min() < 0:
+            raise ValueError("Drug indices must be non-negative.")
+        if labels.min() < 0:
+            raise ValueError("Class labels must be non-negative.")
+        return pairs, labels
 
-        self.print_info(logging)
+    @staticmethod
+    def _load_embeddings(path: Path, name: str, expected_dim: int) -> np.ndarray:
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"{name.title()} embedding file not found: {path}. "
+                "See data/README.md for the layout."
+            )
+        matrix = np.load(path, allow_pickle=False)
+        if matrix.ndim != 2:
+            raise ValueError(f"{path} must be a 2-D matrix; found shape {matrix.shape}.")
+        if matrix.shape[1] != expected_dim:
+            raise ValueError(
+                f"{name.title()} embeddings must have dimension {expected_dim}; "
+                f"found shape {matrix.shape}."
+            )
+        if not np.issubdtype(matrix.dtype, np.number):
+            raise ValueError(f"{path} must contain numeric values.")
+        if not np.isfinite(matrix).all():
+            raise ValueError(f"{path} contains NaN or infinite values.")
+        return matrix
 
-        self.train_graph = None
-        
-        self.load_pretrained_data()
+    @staticmethod
+    def _require_exact_rows(matrix: np.ndarray, expected: int, name: str) -> None:
+        if matrix.shape[0] != expected:
+            raise ValueError(
+                f"{name} embeddings contain {matrix.shape[0]} rows, but DDI indices "
+                f"require exactly {expected}. All modalities must use the same drug order."
+            )
 
-    def load_DDI_data(self, filename):
-
-        train_X_data = []
-        train_Y_data = []
-        test_X_data = []
-        test_Y_data = []
-
-        traindf = pandas.read_csv(filename, delimiter='\t', header=None)
-        data = traindf.values
-        DDI = data[:, 0:2]
-        
-        Y = data[:, 2]
-        label = np.array(list(map(int, Y)))
-
-        print('DDI data shape: {}'.format(DDI.shape))
-        print('DDI label data shape: {}'.format(label.shape))
-
-        if self.multi_type == 'True':
-            kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=3)
-        else:
-            kfold = KFold(n_splits=5, shuffle=True, random_state=3)
-
-        for train, test in kfold.split(DDI, label):
-            train_X_data.append(DDI[train])
-            train_Y_data.append(label[train])
-            test_X_data.append(DDI[test])
-            test_Y_data.append(label[test])
-
-        train_X = np.array(train_X_data)
-        train_Y = np.array(train_Y_data)
-        test_X = np.array(test_X_data)
-        test_Y = np.array(test_Y_data)
-
-        print('Loading DDI data down!')
-
-        return train_X, train_Y, test_X, test_Y
-
-    # 5-fold train data length
-    def statistic_ddi_data(self):
-        data = []
-        for i in range(len(self.DDI_train_data_X)):
-            data.append(len(self.DDI_train_data_X[i]))
-        self.n_ddi_train = data
-
-    def print_info(self, logging):
-
-        # logging.info('n_entities:         %d' % self.n_entities)
-        # logging.info('n_relations:        %d' % self.n_relations)
-        # logging.info('n_kg_train:         %d' % self.n_kg_train)
-        logging.info('n_ddi_train:         %s' % self.n_ddi_train)
-
-    def load_pretrained_data(self):
-
-        print('KG-embedding loading...')
-        transE_entity_path = self.args.entity_embedding_file
-        transE_entity_data = np.load(transE_entity_path)
-
-        # masking_entity_path = 'data/DRKG/gin_supervised_masking_embedding.npy'
-        print('Graph-embedding loading...')
-        masking_entity_path = self.args.graph_embedding_file
-        masking_entity_data = np.load(masking_entity_path)
-
-        print('Protein-embedding loading...')
-        protein_path=self.args.protein_embedding_file
-        protein_data = np.load(protein_path)
-
-        print('Smiles-embedding loading...')
-        smile_path = self.args.smiles_embedding_file
-        smile_data = np.load(smile_path)
-
-        # apply pretrained data
-
-        self.entity_pre_embed = transE_entity_data
-
-        self.structure_pre_embed = masking_entity_data
-        self.protein_pre_embed = protein_data
-        self.smile_pre_embed = smile_data
-        self.n_approved_drug = self.structure_pre_embed.shape[0]
-
-        print('Loading pretrain data down!')
-
+    def describe(self) -> Dict[str, object]:
+        return {
+            "ddi_samples": int(self.pairs.shape[0]),
+            "drugs": int(self.molecular_embeddings.shape[0]),
+            "classes": self.num_classes,
+            "kg_shape": list(self.kg_embeddings.shape),
+            "molecular_shape": list(self.molecular_embeddings.shape),
+            "protein_shape": list(self.protein_embeddings.shape),
+            "folds": len(self.folds),
+        }

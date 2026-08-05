@@ -1,0 +1,11 @@
+name: cmaf-ddi
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.8
+  - numpy=1.24.4
+  - pandas=2.0.3
+  - scikit-learn=1.3.2
+  - pytorch=2.4.1
+  - pip
